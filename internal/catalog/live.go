@@ -958,7 +958,7 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 	// Anthropic's and OpenAI's /v1/models both page with has_more and
 	// last_id.
 	var out []Model
-	vercel, together := VercelGateway(url), TogetherAPI(url)
+	vercel, together, synthetic := VercelGateway(url), TogetherAPI(url), SyntheticAPI(url)
 	for i, r := range rows {
 		id := r.ID
 		if id == "" {
@@ -987,6 +987,11 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 			// Volcengine Ark's names: {"input_modalities": […],
 			// "output_modalities": ["video"]}
 			ins, outs = Kinds(r.Modalities.InputModalities), Kinds(r.Modalities.OutputModalities)
+		}
+		if synthetic && ins == nil && outs == nil {
+			// Synthetic's /openai/v1/models puts input_modalities and
+			// output_modalities at the row's top level.
+			ins, outs = Kinds(stringSlice(r.Inputs)), Kinds(stringSlice(r.Outputs))
 		}
 		// a model the list says makes videos: another magpie's kind, or,
 		// where the list marks no kind, Ark's domain "VideoGeneration" or
@@ -1100,8 +1105,20 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		}
 		if n, ok := r.Output.(float64); ok && n > 0 {
 			m.Output = int(n)
+		} else if n, ok := r.MaxOutputLength.(float64); synthetic && ok && n > 0 {
+			m.Output = int(n) // Synthetic's max_output_length
 		}
 		m.Efforts = levelsOf(r.Levels)
+		if synthetic {
+			if len(m.Efforts) == 0 {
+				if rp, ok := r.ReasoningParams.(map[string]any); ok {
+					m.Efforts = levelsOf(rp["efforts"])
+				}
+			}
+			if len(m.Efforts) > 0 || slices.Contains(stringSlice(r.SupportedFeatures), "reasoning") {
+				m.Reasoning = true
+			}
+		}
 		if r.WebSearch == "native" || r.WebSearch == "magpie" {
 			m.WebSearch = r.WebSearch
 		}
@@ -1224,6 +1241,11 @@ type liveModel struct {
 	Window    any    `json:"context_window"`
 	MaxWindow any    `json:"max_context_window"`
 	Inputs    any    `json:"input_modalities"`
+	// Synthetic's /openai/v1/models fields (read for api.synthetic.new alone)
+	Outputs           any `json:"output_modalities"`
+	MaxOutputLength   any `json:"max_output_length"`
+	ReasoningParams   any `json:"reasoning_parameters"`
+	SupportedFeatures any `json:"supported_features"`
 	// what Kimi Code's list (/coding/v1/models) says of a model's
 	// thinking and tools, flat and nested: supports_thinking_type
 	// "only" is a model that always thinks, supports_dynamic_tools one
@@ -1459,6 +1481,28 @@ func TogetherAPI(u string) bool {
 func VercelGateway(u string) bool {
 	x, err := url.Parse(strings.TrimSpace(u))
 	return err == nil && strings.EqualFold(x.Hostname(), "ai-gateway.vercel.sh")
+}
+
+// SyntheticAPI reports whether u is at Synthetic's API (api.synthetic.new),
+// whose /models lists top-level input_modalities, output_modalities,
+// max_output_length, supported_features and reasoning_parameters.efforts.
+func SyntheticAPI(u string) bool {
+	x, err := url.Parse(strings.TrimSpace(u))
+	return err == nil && strings.EqualFold(x.Hostname(), "api.synthetic.new")
+}
+
+func stringSlice(v any) []string {
+	xs, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		if s, ok := x.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ListError is a model list the vendor answered with an error status:

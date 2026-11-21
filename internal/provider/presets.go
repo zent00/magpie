@@ -605,6 +605,16 @@ var presets = []PresetDef{
 	{ID: "gmicloud", Name: "GMI Cloud", Icon: "gmicloud", Kind: KindRelay,
 		Chat:    "https://api.gmi-serving.com/v1",
 		Website: "https://www.gmicloud.ai", KeysURL: "https://console.gmicloud.ai"},
+	// Synthetic (dev.synthetic.new/docs/api/overview): open-weights models
+	// hosted on Synthetic's own infrastructure, OpenAI-compatible chat
+	// completions and /models at /openai/v1 and Anthropic-compatible
+	// Messages at /anthropic. No Responses endpoint (/openai/v1/responses
+	// returns 404). Keys work for subscriptions and usage-based billing
+	// alike on the same endpoints; subscription windows are read at
+	// /v2/quotas (planquota.go).
+	{ID: "synthetic", Name: "Synthetic", Icon: "synthetic", Kind: KindRelay, Catalog: "synthetic",
+		Chat: "https://api.synthetic.new/openai/v1", Anthropic: "https://api.synthetic.new/anthropic",
+		Website: "https://dev.synthetic.new/docs/api/overview", KeysURL: "https://synthetic.new/settings/api"},
 	{ID: "opencode-go", Name: "OpenCode Go", Icon: "opencode", Kind: KindRelay, Catalog: "opencode-go",
 		Chat: OpenCodeGoChat, Responses: OpenCodeGoChat, Anthropic: OpenCodeGoAnthropic,
 		Note:    "open coding models, $10/month",

@@ -36,7 +36,7 @@ var planPresets = map[string]bool{
 // and decision models, which bill as their own provider does.
 var unsaidPresets = map[string]bool{
 	"minimax": true, "minimax-cn": true, "ollama-cloud": true, "modelscope": true,
-	"nvidia": true, "longcat": true, "commandcode": true,
+	"nvidia": true, "longcat": true, "commandcode": true, "synthetic": true,
 	"typesafe": true, "vercel-jev": true, "cloudflare-jev": true, "aigocode": true,
 	"bailian-decision": true, "qwen-decision": true, "volcengine-decision": true,
 }

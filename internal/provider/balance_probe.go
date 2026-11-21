@@ -163,9 +163,9 @@ func relayPreset(id string) bool {
 }
 
 // noProbeHosts are relays whose keys are told their balance some other
-// way, or not at all: OpenCode's Zen and Go (openCodeZen, its plan) and
-// the Cline API (clineKeyCard).
-var noProbeHosts = []string{"opencode.ai", "api.cline.bot"}
+// way, or not at all: OpenCode's Zen and Go (openCodeZen, its plan),
+// the Cline API (clineKeyCard), and Synthetic (/v2/quotas).
+var noProbeHosts = []string{"opencode.ai", "api.cline.bot", "api.synthetic.new"}
 
 // probeOrigins are the scheme and host of each base the provider names,
 // each once, leaving out a vendor's own host and a local one.

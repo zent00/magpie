@@ -3,11 +3,11 @@ package provider
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
 // Kimi Code, OpenCode Go, a Command Code plan, MiniMax's Coding (Token)
 // Plan, Ollama Cloud's included allowance, a Le Chat plan's month of Mistral
-// Vibe, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
-// Tencent Cloud's Token Plan 企业版 — has windows of allowance like a
-// subscription's, which the vendor tells to the key (StepFun only to a
-// sign-in, stepfun_plan.go, as is the Qwen AI platform's Token Plan,
-// qianwen_plan.go; Volcengine and Tencent Cloud only to the
+// Vibe, Synthetic's subscription plans, StepFun's Step Plan, Volcengine Ark's
+// Coding and Agent Plans and Tencent Cloud's Token Plan 企业版 — has windows
+// of allowance like a subscription's, which the vendor tells to the key
+// (StepFun only to a sign-in, stepfun_plan.go, as is the Qwen AI platform's
+// Token Plan, qianwen_plan.go; Volcengine and Tencent Cloud only to the
 // account's access key, volcengine_usage.go and tencent_usage.go): the
 // Usage page shows them beside the subscriptions'.
 
@@ -74,6 +74,10 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			// a Le Chat plan's Vibe key is told its month of Vibe
 			// (mistral_plan.go); a key with no Vibe budget gets no card
 			return planQuotaSource{mistralBudgetURL, true, readMistralPlan, false}, true
+		case "api.synthetic.new":
+			// Synthetic's subscription plans report their windows at /v2/quotas;
+			// a usage-based-only key has none and gets no card
+			return planQuotaSource{"https://api.synthetic.new/v2/quotas", true, readSyntheticPlan, false}, true
 		}
 	}
 	return planQuotaSource{}, false
@@ -200,6 +204,138 @@ func readOpenCodeGo(b []byte) (string, []QuotaWindow, error) {
 	}
 	if len(out) == 0 {
 		return "", nil, fmt.Errorf("OpenCode Go's reply has no rolling, weekly or monthly window: %s", shapeOf(b))
+	}
+	return "", out, nil
+}
+
+// readSyntheticPlan reads Synthetic's GET /v2/quotas
+// (dev.synthetic.new/docs/synthetic/quotas and octofriend's utils/quota.ts):
+//
+//	{"planWeeklyLimit":{"nextRegenAt":"…","percentRemaining":82.5,"nextRegenPercent":12.5}}
+//	{"rollingFiveHourLimit":{"remaining":40,"max":135,"nextTickAt":"…","tickPercent":0.1},
+//	 "weeklyTokenLimit":{"nextRegenAt":"…","percentRemaining":75,…}}
+//	{"subscription":{"limit":135,"requests":0,"renewsAt":"2025-09-21T14:36:14.288Z"},
+//	 "search":{"hourly":{"limit":250,"requests":10,"renewsAt":"…"}}}
+//
+// Current plans report planWeeklyLimit alone (percentRemaining is in
+// percentage points, 0–100) and any retired subscription counter beside it
+// is ignored. Previous-generation plans report rollingFiveHourLimit and/or
+// weeklyTokenLimit. Legacy or documented responses fall back to
+// subscription. search.hourly, when present beside a plan window, is shown
+// aside so it does not gate model routing. A usage-based-only key has no
+// active limit and returns no windows (no card).
+func readSyntheticPlan(b []byte) (string, []QuotaWindow, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return "", nil, err
+	}
+	if raw == nil {
+		return "", nil, fmt.Errorf("no quota object in the reply")
+	}
+	if errRaw, ok := raw["error"]; ok && strings.TrimSpace(string(errRaw)) != "null" && strings.TrimSpace(string(errRaw)) != `""` {
+		return "", nil, fmt.Errorf("%s", vendorSaid(b, "error"))
+	}
+	type counter struct {
+		Limit    *float64 `json:"limit"`
+		Requests *float64 `json:"requests"`
+		RenewsAt string   `json:"renewsAt"`
+	}
+	var r struct {
+		PlanWeeklyLimit *struct {
+			PercentRemaining *float64 `json:"percentRemaining"`
+			NextRegenAt      string   `json:"nextRegenAt"`
+		} `json:"planWeeklyLimit"`
+		RollingFiveHourLimit *struct {
+			Remaining  *float64 `json:"remaining"`
+			Max        *float64 `json:"max"`
+			NextTickAt string   `json:"nextTickAt"`
+			Limited    bool     `json:"limited"`
+		} `json:"rollingFiveHourLimit"`
+		WeeklyTokenLimit *struct {
+			PercentRemaining *float64 `json:"percentRemaining"`
+			NextRegenAt      string   `json:"nextRegenAt"`
+		} `json:"weeklyTokenLimit"`
+		Subscription *counter `json:"subscription"`
+		Search       *struct {
+			Hourly *counter `json:"hourly"`
+		} `json:"search"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", nil, err
+	}
+	parseTime := func(s string) *time.Time {
+		if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(s)); err == nil {
+			return &t
+		}
+		return nil
+	}
+	clampPct := func(v float64) float64 { return max(0, min(100, v)) }
+
+	var out []QuotaWindow
+	switch {
+	case r.PlanWeeklyLimit != nil && r.PlanWeeklyLimit.PercentRemaining != nil:
+		used := clampPct(100 - *r.PlanWeeklyLimit.PercentRemaining)
+		w := QuotaWindow{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used}
+		if used > 0 {
+			w.ResetsAt = parseTime(r.PlanWeeklyLimit.NextRegenAt)
+		}
+		out = append(out, w)
+	case r.RollingFiveHourLimit != nil || r.WeeklyTokenLimit != nil:
+		if l := r.RollingFiveHourLimit; l != nil && l.Max != nil && *l.Max > 0 && (l.Remaining != nil || l.Limited) {
+			used := 100.0
+			if !l.Limited {
+				used = clampPct((*l.Max - *l.Remaining) / *l.Max * 100)
+			}
+			w := QuotaWindow{Name: "5 hours", Span: 5 * time.Hour, Used: used}
+			if used > 0 {
+				w.ResetsAt = parseTime(l.NextTickAt)
+			}
+			out = append(out, w)
+		}
+		if l := r.WeeklyTokenLimit; l != nil && l.PercentRemaining != nil {
+			used := clampPct(100 - *l.PercentRemaining)
+			w := QuotaWindow{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used}
+			if used > 0 {
+				w.ResetsAt = parseTime(l.NextRegenAt)
+			}
+			out = append(out, w)
+		}
+	}
+	if len(out) == 0 && r.Subscription != nil && r.Subscription.Limit != nil && *r.Subscription.Limit > 0 {
+		req := 0.0
+		if r.Subscription.Requests != nil {
+			req = max(0, *r.Subscription.Requests)
+		}
+		lim := *r.Subscription.Limit
+		out = append(out, QuotaWindow{
+			Name:     "5 hours",
+			Span:     5 * time.Hour,
+			Used:     clampPct(req / lim * 100),
+			Amount:   req,
+			Limit:    lim,
+			Unit:     "requests",
+			ResetsAt: parseTime(r.Subscription.RenewsAt),
+		})
+	}
+	if len(out) > 0 && r.Search != nil && r.Search.Hourly != nil && r.Search.Hourly.Limit != nil && *r.Search.Hourly.Limit > 0 {
+		req := 0.0
+		if r.Search.Hourly.Requests != nil {
+			req = max(0, *r.Search.Hourly.Requests)
+		}
+		lim := *r.Search.Hourly.Limit
+		w := QuotaWindow{
+			Name:   "Search · 1 hour",
+			Span:   time.Hour,
+			Used:   clampPct(req / lim * 100),
+			Amount: req,
+			Limit:  lim,
+			Unit:   "searches",
+			Aside:  true,
+		}
+		if req > 0 {
+			w.ResetsAt = parseTime(r.Search.Hourly.RenewsAt)
+		}
+		out = append(out, w)
 	}
 	return "", out, nil
 }
